@@ -26,6 +26,7 @@ class TSFormer(nn.Module):
     def __init__(self, patch_size, in_channel, embed_dim, num_heads, mlp_ratio, dropout, num_token, mask_ratio, encoder_depth, decoder_depth, mode="pre-train"):
         super().__init__()        
         assert mode in ["pre-train", "forecasting"], "Error mode."
+
         self.patch_size = patch_size
         self.in_channel = in_channel
         self.embed_dim = embed_dim
@@ -99,11 +100,17 @@ class TSFormer(nn.Module):
         batch_size, num_nodes, _, _ = long_term_history.shape
         
         # patchify and embed input
+        # Essentially, each patch is brought to a higher dimensional space, i.e., from L (=12) to d (=96).
         patches = self.patch_embedding(long_term_history)     # B, N, d, P
         patches = patches.transpose(-1, -2)                   # B, N, P, d
+
+        print(f"DEBUG FRA, TSFormer.encoding => shape long_term_history: {long_term_history.shape}")
+        print(f"DEBUG FRA, TSFormer.encoding => shape patches: {patches.shape}")
         
-        # positional embedding
+
+        # positional embedding (does not change the shape of the patches).
         patches = self.positional_encoding(patches)
+
 
         # mask
         if mask:
@@ -113,9 +120,11 @@ class TSFormer(nn.Module):
             unmasked_token_index, masked_token_index = None, None
             encoder_input = patches
 
+
         # encoding
         hidden_states_unmasked = self.encoder(encoder_input)
         hidden_states_unmasked = self.encoder_norm(hidden_states_unmasked).view(batch_size, num_nodes, -1, self.embed_dim)
+
 
         return hidden_states_unmasked, unmasked_token_index, masked_token_index
 
