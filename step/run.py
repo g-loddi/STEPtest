@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(__file__ + "/../.."))
 import torch
 from basicts import launch_training
 
-torch.set_num_threads(12) # aviod high cpu avg usage
+torch.set_num_threads(2) # aviod high cpu avg usage
 
 
 def parse_args():
@@ -30,4 +30,6 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
+    # The function below appears to take as input the path of a Python script representing the configuration of the
+    # training of some model.
     launch_training(args.cfg, args.gpus)

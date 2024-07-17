@@ -15,12 +15,12 @@ CFG = EasyDict()
 
 # ================= general ================= #
 CFG.DESCRIPTION = "TSFormer(METR-LA) configuration"
-CFG.RUNNER = TSFormerRunner
-CFG.DATASET_CLS = PretrainingDataset
+CFG.RUNNER = TSFormerRunner          # Runner encapsulating the training, validation, and testing loops.
+CFG.DATASET_CLS = PretrainingDataset # Pytorch's Dataset subclass
 CFG.DATASET_NAME = "METR-LA"
 CFG.DATASET_TYPE = "Traffic speed"
-CFG.DATASET_INPUT_LEN = 288 * 7
-CFG.DATASET_OUTPUT_LEN = 12
+CFG.DATASET_INPUT_LEN = 288 * 7      # Length of the historical time-windows (2016 samples, frequency is 5 mins, so 1 week length)
+CFG.DATASET_OUTPUT_LEN = 12          # Length of the windows to predict, i.e., 5 min * 12 = 1 hour
 CFG.GPU_NUM = 1
 
 # ================= environment ================= #
@@ -32,8 +32,8 @@ CFG.ENV.CUDNN.ENABLED = True
 # ================= model ================= #
 CFG.MODEL = EasyDict()
 CFG.MODEL.NAME = "TSFormer"
-CFG.MODEL.ARCH = TSFormer
-CFG.MODEL.PARAM = {
+CFG.MODEL.ARCH = TSFormer           # Class of the model to train
+CFG.MODEL.PARAM = {                 # Parameters to be passed to the model's class constructor
     "patch_size":12,
     "in_channel":1,
     "embed_dim":96,
@@ -46,12 +46,12 @@ CFG.MODEL.PARAM = {
     "decoder_depth":1,
     "mode":"pre-train"
 }
-CFG.MODEL.FORWARD_FEATURES = [0]
-CFG.MODEL.TARGET_FEATURES = [0]
+CFG.MODEL.FORWARD_FEATURES = [0] # It seems that the model is using just 1 feature in the input data...? TODO: to be checked.
+CFG.MODEL.TARGET_FEATURES = [0] # It seems that the model is considering just 1 feature when generating output data...? TODO: to be checked.
 
 # ================= optim ================= #
 CFG.TRAIN = EasyDict()
-CFG.TRAIN.LOSS = masked_mae
+CFG.TRAIN.LOSS = masked_mae    # Loss used during training is masked MAE
 CFG.TRAIN.OPTIM = EasyDict()
 CFG.TRAIN.OPTIM.TYPE = "Adam"
 CFG.TRAIN.OPTIM.PARAM= {
@@ -86,7 +86,7 @@ CFG.TRAIN.DATA.BATCH_SIZE = 4
 CFG.TRAIN.DATA.PREFETCH = False
 CFG.TRAIN.DATA.SHUFFLE = True
 CFG.TRAIN.DATA.NUM_WORKERS = 12
-CFG.TRAIN.DATA.PIN_MEMORY = False
+CFG.TRAIN.DATA.PIN_MEMORY = True
 
 # ================= validate ================= #
 CFG.VAL = EasyDict()
@@ -100,7 +100,7 @@ CFG.VAL.DATA.BATCH_SIZE = 4
 CFG.VAL.DATA.PREFETCH = False
 CFG.VAL.DATA.SHUFFLE = False
 CFG.VAL.DATA.NUM_WORKERS = 12
-CFG.VAL.DATA.PIN_MEMORY = False
+CFG.VAL.DATA.PIN_MEMORY = True
 
 # ================= test ================= #
 CFG.TEST = EasyDict()
@@ -115,4 +115,4 @@ CFG.TEST.DATA.BATCH_SIZE = 4
 CFG.TEST.DATA.PREFETCH = False
 CFG.TEST.DATA.SHUFFLE = False
 CFG.TEST.DATA.NUM_WORKERS = 12
-CFG.TEST.DATA.PIN_MEMORY = False
+CFG.TEST.DATA.PIN_MEMORY = True
