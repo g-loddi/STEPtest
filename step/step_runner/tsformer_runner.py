@@ -62,7 +62,10 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
         history_data = self.select_input_features(history_data)
 
         # feed forward
-        reconstruction_masked_tokens, label_masked_tokens = self.model(history_data=history_data, future_data=None, batch_seen=iter_num, epoch=epoch)
+        reconstruction_masked_tokens, label_masked_tokens = self.model(history_data=history_data,
+                                                                       future_data=None, 
+                                                                       batch_seen=iter_num,
+                                                                       epoch=epoch)
         # assert list(prediction_data.shape)[:3] == [batch_size, length, num_nodes], \
             # "error shape of the output, edit the forward function to reshape it to [B, L, N, C]"
         # post process

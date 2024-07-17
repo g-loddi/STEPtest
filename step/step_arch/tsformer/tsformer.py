@@ -9,6 +9,8 @@ from .transformer_layers import TransformerLayers
 
 
 def unshuffle(shuffled_tokens):
+    """This function reverses the shuffling of tokens, creating an unshuffle index."""
+
     dic = {}
     for k, v, in enumerate(shuffled_tokens):
         dic[v] = k
@@ -22,7 +24,7 @@ class TSFormer(nn.Module):
     """An efficient unsupervised pre-training model for Time Series based on transFormer blocks. (TSFormer)"""
 
     def __init__(self, patch_size, in_channel, embed_dim, num_heads, mlp_ratio, dropout, num_token, mask_ratio, encoder_depth, decoder_depth, mode="pre-train"):
-        super().__init__()
+        super().__init__()        
         assert mode in ["pre-train", "forecasting"], "Error mode."
         self.patch_size = patch_size
         self.in_channel = in_channel
@@ -34,27 +36,35 @@ class TSFormer(nn.Module):
         self.mode = mode
         self.mlp_ratio = mlp_ratio
 
+        # NOTE: the authors seem to consider only the 1st feature in the input data (?), i.e., the one coming from the raw data.
         self.selected_feature = 0
 
         # norm layers
         self.encoder_norm = nn.LayerNorm(embed_dim)
         self.decoder_norm = nn.LayerNorm(embed_dim)
 
+
         # encoder specifics
         # # patchify & embedding
         self.patch_embedding = PatchEmbedding(patch_size, in_channel, embed_dim, norm_layer=None)
+        
         # # positional encoding
         self.positional_encoding = PositionalEncoding(embed_dim, dropout=dropout)
+        
         # # masking
         self.mask = MaskGenerator(num_token, mask_ratio)
+        
         # encoder
         self.encoder = TransformerLayers(embed_dim, encoder_depth, mlp_ratio, num_heads, dropout)
+
 
         # decoder specifics
         # transform layer
         self.enc_2_dec_emb = nn.Linear(embed_dim, embed_dim, bias=True)
+        
         # # mask token
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
+        
         # # decoder
         self.decoder = TransformerLayers(embed_dim, decoder_depth, mlp_ratio, num_heads, dropout)
 
@@ -62,11 +72,14 @@ class TSFormer(nn.Module):
         self.output_layer = nn.Linear(embed_dim, patch_size)
         self.initialize_weights()
 
+
     def initialize_weights(self):
-        # positional encoding
+        # Initialize the weights of the matrix representing the positional encoding
         nn.init.uniform_(self.positional_encoding.position_embedding, -.02, .02)
+        
         # mask token
         trunc_normal_(self.mask_token, std=.02)
+
 
     def encoding(self, long_term_history, mask=True):
         """Encoding process of TSFormer: patchify, positional encoding, mask, Transformer layers.
@@ -84,9 +97,11 @@ class TSFormer(nn.Module):
         """
 
         batch_size, num_nodes, _, _ = long_term_history.shape
+        
         # patchify and embed input
         patches = self.patch_embedding(long_term_history)     # B, N, d, P
-        patches = patches.transpose(-1, -2)         # B, N, P, d
+        patches = patches.transpose(-1, -2)                   # B, N, P, d
+        
         # positional embedding
         patches = self.positional_encoding(patches)
 
@@ -159,7 +174,9 @@ class TSFormer(nn.Module):
 
         return reconstruction_masked_tokens, label_masked_tokens
 
-    def forward(self, history_data: torch.Tensor, future_data: torch.Tensor = None, batch_seen: int = None, epoch: int = None, **kwargs) -> torch.Tensor:
+
+    def forward(self, history_data: torch.Tensor, future_data: torch.Tensor = None,
+                batch_seen: int = None, epoch: int = None, **kwargs) -> torch.Tensor:
         """feed forward of the TSFormer.
             TSFormer has two modes: the pre-training mode and the forecasting mode,
                                     which are used in the pre-training stage and the forecasting stage, respectively.
@@ -175,17 +192,28 @@ class TSFormer(nn.Module):
             forecasting:
                 torch.Tensor: the output of TSFormer of the encoder with shape [B, N, L, 1].
         """
-        # reshape
+
+        # Reshape the array containing the currently considered batch.
+        # Original history_data is of shape B, L*P, N, 1, i.e.,  Batch size, Length of the hist. time series expressed as L*P, # Nodes, # features (= 1)
+        # NOTE 1: each element in the batch refers to a pair (hist window, future window), extracted from the original dataset in the preprocessing step
+        #         by generating indexes using sliding windows.
+        # NOTE 2: in the paper we have L=12. So, e.g. with METR-LA, P=2016/12=168. 
         history_data = history_data.permute(0, 2, 3, 1)     # B, N, 1, L * P
+
+
         # feed forward
+        # Case 1 - pre-training mode.
         if self.mode == "pre-train":
             # encoding
             hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data)
+            
             # decoding
             reconstruction_full = self.decoding(hidden_states_unmasked, masked_token_index)
+            
             # for subsequent loss computing
             reconstruction_masked_tokens, label_masked_tokens = self.get_reconstructed_masked_tokens(reconstruction_full, history_data, unmasked_token_index, masked_token_index)
             return reconstruction_masked_tokens, label_masked_tokens
+        # Case 2 - forecasting mode
         else:
             hidden_states_full, _, _ = self.encoding(history_data, mask=False)
             return hidden_states_full
