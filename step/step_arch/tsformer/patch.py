@@ -75,7 +75,7 @@ class PatchEmbedding(nn.Module):
         output = output.squeeze(-1).view(batch_size, num_nodes, self.output_channel, -1)
         print(f"DEBUG FRA => PatchEmbedding.forward, shape output / 3: {output.shape}")
         
-        # Sanity check on the shape of the patchified output.
+        # Sanity check on the shape of the patchified output: we check that the last dimension is equal to the expected number of patches.
         assert output.shape[-1] == len_time_series / self.len_patch
         
         return output

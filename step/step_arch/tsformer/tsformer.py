@@ -53,6 +53,7 @@ class TSFormer(nn.Module):
         self.positional_encoding = PositionalEncoding(embed_dim, dropout=dropout)
         
         # # masking
+        # NOTE: num_token represents the number of patches in a time-series (e.g., 168 in the case of METR-LA).
         self.mask = MaskGenerator(num_token, mask_ratio)
         
         # encoder
@@ -99,7 +100,7 @@ class TSFormer(nn.Module):
 
         batch_size, num_nodes, _, _ = long_term_history.shape
         
-        # patchify and embed input
+        # Patchify and embed the multivariate timeseries.
         # Essentially, each patch is brought to a higher dimensional space, i.e., from L (=12) to d (=96).
         patches = self.patch_embedding(long_term_history)     # B, N, d, P
         patches = patches.transpose(-1, -2)                   # B, N, P, d
@@ -108,15 +109,21 @@ class TSFormer(nn.Module):
 
         # positional embedding applied to the patches.
         patches = self.positional_encoding(patches)
+        print(f"DEBUG FRA, TSFormer.encoding => shape patches after pos embedding: {patches.shape}")
 
 
         # Patch masking
         if mask:
+            # 1 - Create the mask to be applied on the patchified multivariate timeseries. This effectively selects only a subset of patches
+            #     from the patchified multivariate timeseries, thus creating a smaller tensor.
+            # NOTE: we also take note of the positions of unmasked and masked tokens.
             unmasked_token_index, masked_token_index = self.mask()
+            # 2 - Apply the mask.
             encoder_input = patches[:, :, unmasked_token_index, :]
         else:
             unmasked_token_index, masked_token_index = None, None
             encoder_input = patches
+        print(f"DEBUG FRA, TSFormer.encoding => shape encoder_input after masking: {encoder_input.shape}")
 
 
         # encoding
