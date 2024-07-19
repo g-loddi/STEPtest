@@ -103,16 +103,14 @@ class TSFormer(nn.Module):
         # Essentially, each patch is brought to a higher dimensional space, i.e., from L (=12) to d (=96).
         patches = self.patch_embedding(long_term_history)     # B, N, d, P
         patches = patches.transpose(-1, -2)                   # B, N, P, d
-
-        print(f"DEBUG FRA, TSFormer.encoding => shape long_term_history: {long_term_history.shape}")
         print(f"DEBUG FRA, TSFormer.encoding => shape patches: {patches.shape}")
         
 
-        # positional embedding (does not change the shape of the patches).
+        # positional embedding applied to the patches.
         patches = self.positional_encoding(patches)
 
 
-        # mask
+        # Patch masking
         if mask:
             unmasked_token_index, masked_token_index = self.mask()
             encoder_input = patches[:, :, unmasked_token_index, :]
@@ -202,8 +200,9 @@ class TSFormer(nn.Module):
                 torch.Tensor: the output of TSFormer of the encoder with shape [B, N, L, 1].
         """
 
-        # Reshape the array containing the currently considered batch.
-        # Original history_data is of shape B, L*P, N, 1, i.e.,  Batch size, Length of the hist. time series expressed as L*P, # Nodes, # features (= 1)
+        # Reshape the array containing the currently considered batch of historical windows of multivariate timeseries.
+        # Original history_data has shape (B, L*P, N, 1), i.e., Batch size, Length of the hist. time series expressed as L*P, # Nodes (which are the
+        # ), # features (= 1)
         # NOTE 1: each element in the batch refers to a pair (hist window, future window), extracted from the original dataset in the preprocessing step
         #         by generating indexes using sliding windows.
         # NOTE 2: in the paper we have L=12. So, e.g. with METR-LA, P=2016/12=168. 
@@ -213,7 +212,7 @@ class TSFormer(nn.Module):
         # feed forward
         # Case 1 - pre-training mode.
         if self.mode == "pre-train":
-            # encoding
+            # encoding: applies patchification, positional encoding, masking, and then the actual transformer layers).
             hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data)
             
             # decoding
