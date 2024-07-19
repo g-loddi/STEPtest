@@ -74,5 +74,8 @@ class PatchEmbedding(nn.Module):
         # and then we reshape the tensor to undo the vertical stack (see view) previously done.
         output = output.squeeze(-1).view(batch_size, num_nodes, self.output_channel, -1)
         print(f"DEBUG FRA => PatchEmbedding.forward, shape output / 3: {output.shape}")
+        
+        # Sanity check on the shape of the patchified output.
         assert output.shape[-1] == len_time_series / self.len_patch
+        
         return output
