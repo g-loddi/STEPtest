@@ -45,7 +45,8 @@ class TSFormer(nn.Module):
         self.decoder_norm = nn.LayerNorm(embed_dim)
 
 
-        # encoder specifics
+        ### encoder specifics ###
+
         # # patchify & embedding
         self.patch_embedding = PatchEmbedding(patch_size, in_channel, embed_dim, norm_layer=None)
         
@@ -60,8 +61,9 @@ class TSFormer(nn.Module):
         self.encoder = TransformerLayers(embed_dim, encoder_depth, mlp_ratio, num_heads, dropout)
 
 
-        # decoder specifics
-        # transform layer
+        # ### decoder specifics ###
+
+        # linear layer
         self.enc_2_dec_emb = nn.Linear(embed_dim, embed_dim, bias=True)
         
         # # mask token
@@ -101,24 +103,24 @@ class TSFormer(nn.Module):
         batch_size, num_nodes, _, _ = long_term_history.shape
         
         # Patchify and embed the multivariate timeseries.
-        # Essentially, each patch is brought to a higher dimensional space, i.e., from L (=12) to d (=96).
+        # NOTE: each patch is embedded into a higher dimensional space, e.g., from L(=12) to d(=96) in the METR-LA case.
         patches = self.patch_embedding(long_term_history)     # B, N, d, P
         patches = patches.transpose(-1, -2)                   # B, N, P, d
         print(f"DEBUG FRA, TSFormer.encoding => shape patches: {patches.shape}")
         
 
-        # positional embedding applied to the patches.
+        ### positional embedding applied to the patches. ###
         patches = self.positional_encoding(patches)
         print(f"DEBUG FRA, TSFormer.encoding => shape patches after pos embedding: {patches.shape}")
 
 
-        # Patch masking
+        ### Patch masking ###
         if mask:
-            # 1 - Create the mask to be applied on the patchified multivariate timeseries. This effectively selects only a subset of patches
-            #     from the patchified multivariate timeseries, thus creating a smaller tensor.
-            # NOTE: we also take note of the positions of unmasked and masked tokens.
+            # 1 - Create the masks to be applied on the patchified multivariate timeseries. The masks are simply indexes, and can be used to select 
+            #     a subset of patches from the complete, patchified multivariate timeseries. When using the unmasked_token_index, this creates
+            #     in output a smaller tensor, "encoder_input" that will be fed to the transformer layers.
             unmasked_token_index, masked_token_index = self.mask()
-            # 2 - Apply the mask.
+            # 2 - Select the tokens that haven't been masked.
             encoder_input = patches[:, :, unmasked_token_index, :]
         else:
             unmasked_token_index, masked_token_index = None, None
@@ -126,43 +128,66 @@ class TSFormer(nn.Module):
         print(f"DEBUG FRA, TSFormer.encoding => shape encoder_input after masking: {encoder_input.shape}")
 
 
-        # encoding
+        ### Transformer encoding ###
         hidden_states_unmasked = self.encoder(encoder_input)
+        print(f"DEBUG FRA, TSFormer.encoding => shape hidden_states_unmasked: {hidden_states_unmasked.shape}")
+        
+        ### Final normalization ###
+        # NOTE: the final view seems useless, it doesn't change the shape of hidden_states_unmasked.
         hidden_states_unmasked = self.encoder_norm(hidden_states_unmasked).view(batch_size, num_nodes, -1, self.embed_dim)
-
+        print(f"DEBUG FRA, TSFormer.encoding => shape hidden_states_unmasked after normalization and final reshaping: {hidden_states_unmasked.shape}")
 
         return hidden_states_unmasked, unmasked_token_index, masked_token_index
+
 
     def decoding(self, hidden_states_unmasked, masked_token_index):
         """Decoding process of TSFormer: encoder 2 decoder layer, add mask tokens, Transformer layers, predict.
 
         Args:
-            hidden_states_unmasked (torch.Tensor): hidden states of masked tokens [B, N, P*(1-r), d].
+            hidden_states_unmasked (torch.Tensor): hidden states of unmasked tokens [B, N, P*(1-r), d]. NOTE: "r" is the percentage of masked tokens.
             masked_token_index (list): masked token index
 
         Returns:
             torch.Tensor: reconstructed data
         """
+
         batch_size, num_nodes, _, _ = hidden_states_unmasked.shape
 
-        # encoder 2 decoder layer
+        # encoder 2 decoder layer -- it's just a simple linear layer with bias term.
+        # NOTE: it does not change the dimensionality but potentially adjusts the embeddings from the encoder for better decoding.
         hidden_states_unmasked = self.enc_2_dec_emb(hidden_states_unmasked)
 
-        # add mask tokens
+        # Generate a tensor representing the masked tokens.
+        # So, a masked token is essentially a zero value, i.e., nn.Parameter(torch.zeros(1, 1, 1, embed_dim)) in self.mask_token. 
+        # First, we replicate a masked token via "expand" to create a tensor of zeros with shape [B, N, P*r, d].
+        # Secondly, we add the positional embeddings on these masked tokens via self.positional_encoding by passing the masked_token_index, which enables
+        # to take into account the position of the masked tokens when adding the encoding. 
         hidden_states_masked = self.positional_encoding(
             self.mask_token.expand(batch_size, num_nodes, len(masked_token_index), hidden_states_unmasked.shape[-1]),
             index=masked_token_index
             )
+        
+        print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_unmasked: {hidden_states_unmasked.shape}")
+        print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_masked: {hidden_states_masked.shape}")
+        # Here we concatenate the block of hidden_states pertaining the unmasked tokens, followed by the block of hidden_states
+        # pertaining the masked tokens. 
         hidden_states_full = torch.cat([hidden_states_unmasked, hidden_states_masked], dim=-2)   # B, N, P, d
+        print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_full: {hidden_states_full.shape}")
 
-        # decoding
+        # decoding (similar to the transformer layers stack of the encoder, just changes the number of layers),
+        # followed by normalization of the computed hidden states.
         hidden_states_full = self.decoder(hidden_states_full)
         hidden_states_full = self.decoder_norm(hidden_states_full)
+        print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_full / 2: {hidden_states_full.shape}")
 
-        # prediction (reconstruction)
+        # prediction (reconstruction): here we have a simple linear layer, i.e., self.output_layer, that projects the 96-dim embeddings
+        # of the patches back to the time series space (e.g., 12 samples with METR-LA).
+        # NOTE: the view seems to do a useless reshape!
         reconstruction_full = self.output_layer(hidden_states_full.view(batch_size, num_nodes, -1, self.embed_dim))
+        print(f"DEBUG FRA, TSFormer.decoding => shape reconstruction_full / 2: {reconstruction_full.shape}")
 
         return reconstruction_full
+
 
     def get_reconstructed_masked_tokens(self, reconstruction_full, real_value_full, unmasked_token_index, masked_token_index):
         """Get reconstructed masked tokens and corresponding ground-truth for subsequent loss computing.
@@ -179,6 +204,7 @@ class TSFormer(nn.Module):
         """
         # get reconstructed masked tokens
         batch_size, num_nodes, _, _ = reconstruction_full.shape
+        
         reconstruction_masked_tokens = reconstruction_full[:, :, len(unmasked_token_index):, :]     # B, N, r*P, d
         reconstruction_masked_tokens = reconstruction_masked_tokens.view(batch_size, num_nodes, -1).transpose(1, 2)     # B, r*P*d, N
 
@@ -219,15 +245,16 @@ class TSFormer(nn.Module):
         # feed forward
         # Case 1 - pre-training mode.
         if self.mode == "pre-train":
-            # encoding: applies patchification, positional encoding, masking, and then the actual transformer layers).
+            # 1.1 - encoding: applies patchification, positional encoding, masking, and then the actual transformer layers).
             hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data)
             
-            # decoding
+            # 1.2 - decoding
             reconstruction_full = self.decoding(hidden_states_unmasked, masked_token_index)
             
             # for subsequent loss computing
             reconstruction_masked_tokens, label_masked_tokens = self.get_reconstructed_masked_tokens(reconstruction_full, history_data, unmasked_token_index, masked_token_index)
             return reconstruction_masked_tokens, label_masked_tokens
+        
         # Case 2 - forecasting mode
         else:
             hidden_states_full, _, _ = self.encoding(history_data, mask=False)

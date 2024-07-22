@@ -46,8 +46,9 @@ class PositionalEncoding(nn.Module):
         else:
             pe = self.position_embedding[index].unsqueeze(0)
         
-        # Apply the positional encoding to the patchified multivariate timeseries, and then apply dropout.
-        # Note that broadcast is applied in the sum.
+        # Apply the positional encoding to the patchified multivariate timeseries, and then apply dropout. 
+        # The positional encoding is applied on a per-node level.
+        # NOTE: the broadcast is applied when computing the sum.
         input_data = input_data + pe
         input_data = self.dropout(input_data)
         
