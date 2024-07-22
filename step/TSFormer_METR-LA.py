@@ -19,7 +19,7 @@ CFG.RUNNER = TSFormerRunner          # Runner encapsulating the training, valida
 CFG.DATASET_CLS = PretrainingDataset # Pytorch's Dataset subclass
 CFG.DATASET_NAME = "METR-LA"
 CFG.DATASET_TYPE = "Traffic speed"
-CFG.DATASET_INPUT_LEN = 288 * 7      # Length of the historical time-windows (2016 samples, frequency is 5 mins, so 1 week length)
+CFG.DATASET_INPUT_LEN = 288 * 7      # Length of the historical time-windows (2016 samples, frequency is 5 mins, so this equates to 1 week length)
 CFG.DATASET_OUTPUT_LEN = 12          # Length of the windows to predict, i.e., 5 min * 12 = 1 hour
 CFG.GPU_NUM = 1
 

@@ -11,6 +11,7 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
         self.forward_features = cfg["MODEL"].get("FORWARD_FEATURES", None)
         self.target_features = cfg["MODEL"].get("TARGET_FEATURES", None)
 
+
     def select_input_features(self, data: torch.Tensor) -> torch.Tensor:
         """Select input features and reshape data to fit the target model.
 
@@ -26,6 +27,7 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
             data = data[:, :, :, self.forward_features]
         return data
 
+
     def select_target_features(self, data: torch.Tensor) -> torch.Tensor:
         """Select target features and reshape data back to the BasicTS framework
 
@@ -39,6 +41,7 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
         # select feature using self.target_features
         data = data[:, :, :, self.target_features]
         return data
+
 
     def forward(self, data: tuple, epoch:int = None, iter_num: int = None, train:bool = True, **kwargs) -> tuple:
         """feed forward process for train, val, and test. Note that the outputs are NOT re-scaled.
@@ -72,6 +75,7 @@ class TSFormerRunner(BaseTimeSeriesForecastingRunner):
         # prediction = self.select_target_features(prediction_data)
         # real_value = self.select_target_features(future_data)
         return reconstruction_masked_tokens, label_masked_tokens
+
 
     @torch.no_grad()
     @master_only

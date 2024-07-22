@@ -170,19 +170,22 @@ class TSFormer(nn.Module):
         print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_unmasked: {hidden_states_unmasked.shape}")
         print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_masked: {hidden_states_masked.shape}")
         # Here we concatenate the block of hidden_states pertaining the unmasked tokens, followed by the block of hidden_states
-        # pertaining the masked tokens. 
+        # pertaining the masked tokens.
+        # NOTE: the concatenation appears to destroy the temporal ordering across patches. Is this perhaps reconstructed outside of the decoding
+        #       method?
         hidden_states_full = torch.cat([hidden_states_unmasked, hidden_states_masked], dim=-2)   # B, N, P, d
         print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_full: {hidden_states_full.shape}")
 
-        # decoding (similar to the transformer layers stack of the encoder, just changes the number of layers),
-        # followed by normalization of the computed hidden states.
+        # Now the projected hidden states pertaining to unmasked tokens, as well as hidden states related to masked tokens,
+        # are passed to Transformer layers, which are in charge of doing the appropriate transformations that will help to reconstruct
+        # the patches in their original space (similar to the transformer layers stack of the encoder, just changes the number of layers).
         hidden_states_full = self.decoder(hidden_states_full)
         hidden_states_full = self.decoder_norm(hidden_states_full)
         print(f"DEBUG FRA, TSFormer.decoding => shape hidden_states_full / 2: {hidden_states_full.shape}")
 
         # prediction (reconstruction): here we have a simple linear layer, i.e., self.output_layer, that projects the 96-dim embeddings
         # of the patches back to the time series space (e.g., 12 samples with METR-LA).
-        # NOTE: the view seems to do a useless reshape!
+        # NOTE: the view seems to do a useless reshape, at least in the METR-LA case.
         reconstruction_full = self.output_layer(hidden_states_full.view(batch_size, num_nodes, -1, self.embed_dim))
         print(f"DEBUG FRA, TSFormer.decoding => shape reconstruction_full / 2: {reconstruction_full.shape}")
 
@@ -202,15 +205,45 @@ class TSFormer(nn.Module):
             torch.Tensor: reconstructed masked tokens.
             torch.Tensor: ground truth masked tokens.
         """
-        # get reconstructed masked tokens
+        # 1 - get reconstructed masked tokens
         batch_size, num_nodes, _, _ = reconstruction_full.shape
         
-        reconstruction_masked_tokens = reconstruction_full[:, :, len(unmasked_token_index):, :]     # B, N, r*P, d
-        reconstruction_masked_tokens = reconstruction_masked_tokens.view(batch_size, num_nodes, -1).transpose(1, 2)     # B, r*P*d, N
+        # 1.1 - Retrieve the reconstructed masked tokens in reconstruction full -- it's a contiguous block due to previous cat. Shape [B, N, r*P, L],
+        #       where L is the length of each patch in the original (timeseries) space.
+        reconstruction_masked_tokens = reconstruction_full[:, :, len(unmasked_token_index):, :]
+        print(f"DEBUG FRA, TSFormer.get_reconstructed_masked_tokens => shape reconstruction_masked_tokens / 1: {reconstruction_masked_tokens.shape}")
+        
+        # 1.2 - Then, reshape (view) the tensor such that its shape becomes [B, r*P*L, N] -- we are essentially flattening the patch embeddings of each node.
+        # Finally, swap (permute) the last two dimensions, yielding a tensor with shape [B, r*P*L, N]
+        reconstruction_masked_tokens = reconstruction_masked_tokens.view(batch_size, num_nodes, -1).transpose(1, 2)
+        print(f"DEBUG FRA, TSFormer.get_reconstructed_masked_tokens => shape reconstruction_masked_tokens / 2: {reconstruction_masked_tokens.shape}")
 
-        label_full = real_value_full.permute(0, 3, 1, 2).unfold(1, self.patch_size, self.patch_size)[:, :, :, self.selected_feature, :].transpose(1, 2)  # B, N, P, L
-        label_masked_tokens = label_full[:, :, masked_token_index, :].contiguous() # B, N, r*P, d
-        label_masked_tokens = label_masked_tokens.view(batch_size, num_nodes, -1).transpose(1, 2)  # B, r*P*d, N
+
+        # 2 - Retrieve the actual values of all the patches in a window in their original space.
+        #     Permute the dimensions such that label_full has shape [B, L*P, N, num_features_ts]
+        label_full = real_value_full.permute(0, 3, 1, 2)
+        print(f"DEBUG FRA, TSFormer.get_reconstructed_masked_tokens => shape label_full / 1: {label_full.shape}")
+
+        # 2.1 - Unfold accepts three parameters: dimension, size, and step. It returns a view of the original tensor which contains 
+        # all slices of size "size" from self tensor in the dimension "dimension". So, what the unfold below is doing is to extract
+        # windows of length "self.patch_size" by sliding a window of length "self.patch_size" over "label_full", and store them in a new dimension
+        # that will be appended at the end of label_full. The new dimension will have size "self.patch_size", while dimension 1 (i.e., L*P) will
+        # have a new size P. Overall, this yields a tensor with shape [B, P, N, num_features_ts, L]
+        label_full = label_full.unfold(1, self.patch_size, self.patch_size)
+        print(f"DEBUG FRA, TSFormer.get_reconstructed_masked_tokens => shape label_full / 2: {label_full.shape}")
+        
+        # 2.2 - Select only the feature of interest in the timeseries (in case of METR-LA we have only 1 feature per node's univariate timeseries).
+        #       This eliminates the "num_features_ts" dimension. Finally, swap the first dimension with the second one, yielding a tensor with shape
+        #       [B, N, P, L]. 
+        label_full = label_full[:, :, :, self.selected_feature, :].transpose(1, 2)
+        print(f"DEBUG FRA, TSFormer.get_reconstructed_masked_tokens => shape label_full / 3: {label_full.shape}")
+        
+        # 2.3 - Select the tokens that were masked, and ensure that they are arranged contiguously in the final tensor.
+        label_masked_tokens = label_full[:, :, masked_token_index, :].contiguous() # B, N, r*P, L
+
+        # 2.4 - Then reshape (view) yielding shape [B, N, r*P*L], and then transpose to get the same shape as "reconstruction_masked_tokens",
+        #       i.e., [B, r*P*L, N], so that the reconstructed masked tokens can be compared with the ground truth.
+        label_masked_tokens = label_masked_tokens.view(batch_size, num_nodes, -1).transpose(1, 2)
 
         return reconstruction_masked_tokens, label_masked_tokens
 
@@ -248,11 +281,14 @@ class TSFormer(nn.Module):
             # 1.1 - encoding: applies patchification, positional encoding, masking, and then the actual transformer layers).
             hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data)
             
-            # 1.2 - decoding
+            # 1.2 - decoding: here the decoder attempts to reconstruct the patches from the embeddings.
+            #       NOTE: it appears that the decoder does not preserve the temporal order across patches when reconstructing it -- see
+            #             the concatenation in "decoding".
             reconstruction_full = self.decoding(hidden_states_unmasked, masked_token_index)
             
-            # for subsequent loss computing
-            reconstruction_masked_tokens, label_masked_tokens = self.get_reconstructed_masked_tokens(reconstruction_full, history_data, unmasked_token_index, masked_token_index)
+            # Return the reconstructed tokens that were masked with their actual values from the dataset for subsequent loss computing
+            reconstruction_masked_tokens, label_masked_tokens = \
+                self.get_reconstructed_masked_tokens(reconstruction_full, history_data, unmasked_token_index, masked_token_index)
             return reconstruction_masked_tokens, label_masked_tokens
         
         # Case 2 - forecasting mode

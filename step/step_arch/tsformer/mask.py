@@ -21,7 +21,6 @@ class MaskGenerator(nn.Module):
         self.masked_tokens = mask[:mask_len]
         self.unmasked_tokens = mask[mask_len:]
 
-        # NOTE: the sorting of the indexes doesn't seem to be necessary...why they did it?
         if self.sort:
             self.masked_tokens = sorted(self.masked_tokens)
             self.unmasked_tokens = sorted(self.unmasked_tokens)
