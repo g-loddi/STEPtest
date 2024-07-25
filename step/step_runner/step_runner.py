@@ -7,9 +7,11 @@ from basicts.metrics import masked_mae, masked_rmse, masked_mape
 class STEPRunner(BaseTimeSeriesForecastingRunner):
     def __init__(self, cfg: dict):
         super().__init__(cfg)
+        
         self.metrics = cfg.get("METRICS", {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape})
         self.forward_features = cfg["MODEL"].get("FORWARD_FEATURES", None)
         self.target_features = cfg["MODEL"].get("TARGET_FEATURES", None)
+
 
     def select_input_features(self, data: torch.Tensor) -> torch.Tensor:
         """Select input features and reshape data to fit the target model.
@@ -26,6 +28,7 @@ class STEPRunner(BaseTimeSeriesForecastingRunner):
             data = data[:, :, :, self.forward_features]
         return data
 
+
     def select_target_features(self, data: torch.Tensor) -> torch.Tensor:
         """Select target features and reshape data back to the BasicTS framework
 
@@ -39,6 +42,7 @@ class STEPRunner(BaseTimeSeriesForecastingRunner):
         # select feature using self.target_features
         data = data[:, :, :, self.target_features]
         return data
+
 
     def forward(self, data: tuple, epoch:int = None, iter_num: int = None, train:bool = True, **kwargs) -> tuple:
         """feed forward process for train, val, and test. Note that the outputs are NOT re-scaled.
@@ -56,7 +60,7 @@ class STEPRunner(BaseTimeSeriesForecastingRunner):
         # preprocess
         future_data, history_data, long_history_data = data
         history_data        = self.to_running_device(history_data)      # B, L, N, C
-        long_history_data   = self.to_running_device(long_history_data)       # B, L, N, C
+        long_history_data   = self.to_running_device(long_history_data) # B, L, N, C
         future_data         = self.to_running_device(future_data)       # B, L, N, C
 
         history_data = self.select_input_features(history_data)

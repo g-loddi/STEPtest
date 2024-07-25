@@ -56,6 +56,7 @@ class DiscreteGraphLearning(nn.Module):
         self.train_length = {"METR-LA": 23990, "PEMS04": 13599, "PEMS03": 15303, "PEMS07": 16513, "PEMS-BAY": 36482, "PEMS08": 14284}[dataset_name]
         self.node_feats = torch.from_numpy(load_pkl("datasets/" + dataset_name + "/data_in{0}_out{1}.pkl".format(input_seq_len, output_seq_len))["processed_data"]).float()[:self.train_length, :, 0]
 
+
         # CNN for global feature extraction
         ## for the dimension, see https://github.com/zezhishao/STEP/issues/1#issuecomment-1191640023
         self.dim_fc = {"METR-LA": 383552, "PEMS04": 217296, "PEMS03": 244560, "PEMS07": 263920, "PEMS-BAY": 583424, "PEMS08": 228256}[dataset_name]
@@ -68,15 +69,18 @@ class DiscreteGraphLearning(nn.Module):
         self.bn2 = torch.nn.BatchNorm1d(16)
         self.bn3 = torch.nn.BatchNorm1d(self.embedding_dim)
 
+
         # FC for transforming the features from TSFormer
         ## for the dimension, see https://github.com/zezhishao/STEP/issues/1#issuecomment-1191640023
         self.dim_fc_mean = {"METR-LA": 16128, "PEMS-BAY": 16128, "PEMS03": 16128 * 2, "PEMS04": 16128 * 2, "PEMS07": 16128, "PEMS08": 16128 * 2}[dataset_name]
         self.fc_mean = nn.Linear(self.dim_fc_mean, 100)
 
+
         # discrete graph learning
         self.fc_cat = nn.Linear(self.embedding_dim, 2)
         self.fc_out = nn.Linear((self.embedding_dim) * 2, self.embedding_dim)
         self.dropout = nn.Dropout(0.5)
+
 
         def encode_one_hot(labels):
         # reference code https://github.com/chaoshangcs/GTS/blob/8ed45ff1476639f78c382ff09ecca8e60523e7ce/model/pytorch/model.py#L149
@@ -87,6 +91,7 @@ class DiscreteGraphLearning(nn.Module):
 
         self.rel_rec = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[0]), dtype=np.float32))
         self.rel_send = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[1]), dtype=np.float32))
+
 
     def get_k_nn_neighbor(self, data, k=11*207, metric="cosine"):
         """
@@ -109,6 +114,7 @@ class DiscreteGraphLearning(nn.Module):
         adj = adj.view(batch_size, num_nodes, num_nodes)
         adj.requires_grad = False
         return adj
+
 
     def forward(self, long_term_history, tsformer):
         """Learning discrete graph structure based on TSFormer.

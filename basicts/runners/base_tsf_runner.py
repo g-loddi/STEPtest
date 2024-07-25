@@ -26,7 +26,9 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
     def __init__(self, cfg: dict):
         super().__init__(cfg)
+
         self.dataset_name = cfg["DATASET_NAME"]
+        
         # different datasets have different null_values, e.g., 0.0 or np.nan.
         self.null_val = cfg["TRAIN"].get("NULL_VAL", np.nan)    # consist with metric functions
         self.dataset_type = cfg["DATASET_TYPE"]
@@ -34,10 +36,13 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
         # read scaler for re-normalization
         self.scaler = load_pkl("{0}/scaler_in{1}_out{2}.pkl".format(cfg["TRAIN"]["DATA"]["DIR"], cfg["DATASET_INPUT_LEN"], cfg["DATASET_OUTPUT_LEN"]))
+        
         # define loss
         self.loss = cfg["TRAIN"]["LOSS"]
+        
         # define metric
         self.metrics = {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
+        
         # curriculum learning for output. Note that this is different from the CL in Seq2Seq archs.
         self.cl_param = cfg.TRAIN.get("CL", None)
         if self.cl_param is not None:
@@ -45,9 +50,11 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
             self.cl_epochs = cfg.TRAIN.CL.get("CL_EPOCHS")
             self.prediction_length = cfg.TRAIN.CL.get("PREDICTION_LENGTH")
             self.cl_step_size = cfg.TRAIN.CL.get("STEP_SIZE", 1)
+        
         # evaluation horizon
         self.evaluation_horizons = [_ - 1 for _ in cfg["TEST"].get("EVALUATION_HORIZONS", range(1, 13))]
         assert min(self.evaluation_horizons) >= 0, "The horizon should start counting from 0."
+
 
     def init_training(self, cfg: dict):
         """Initialize training.
@@ -62,6 +69,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         for key, _ in self.metrics.items():
             self.register_epoch_meter("train_"+key, "train", "{:.4f}")
 
+
     def init_validation(self, cfg: dict):
         """Initialize validation.
 
@@ -75,6 +83,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         for key, _ in self.metrics.items():
             self.register_epoch_meter("val_"+key, "val", "{:.4f}")
 
+
     def init_test(self, cfg: dict):
         """Initialize test.
 
@@ -87,6 +96,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         super().init_test(cfg)
         for key, _ in self.metrics.items():
             self.register_epoch_meter("test_"+key, "test", "{:.4f}")
+
 
     def build_train_dataset(self, cfg: dict):
         """Build MNIST train dataset
@@ -116,6 +126,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
         return dataset
 
+
     @staticmethod
     def build_val_dataset(cfg: dict):
         """Build MNIST val dataset
@@ -140,6 +151,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         print("val len: {0}".format(len(dataset)))
 
         return dataset
+
 
     @staticmethod
     def build_test_dataset(cfg: dict):
@@ -167,6 +179,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
 
         return dataset
 
+
     def curriculum_learning(self, epoch: int = None) -> int:
         """Calculate task level in curriculum learning.
 
@@ -189,6 +202,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
             cl_length = min(_, self.prediction_length)
         return cl_length
 
+
     def forward(self, data: tuple, epoch: int = None, iter_num: int = None, train: bool = True, **kwargs) -> tuple:
         """Feed forward process for train, val, and test. Note that the outputs are NOT re-scaled.
 
@@ -203,6 +217,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         """
 
         raise NotImplementedError()
+
 
     def metric_forward(self, metric_func, args):
         """Computing metrics.
@@ -221,6 +236,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         else:
             raise TypeError("Unknown metric type: {0}".format(type(metric_func)))
         return metric_item
+
 
     def train_iters(self, epoch: int, iter_index: int, data: Union[torch.Tensor, Tuple]) -> torch.Tensor:
         """Training details.
@@ -254,6 +270,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
             self.update_epoch_meter("train_"+metric_name, metric_item.item())
         return loss
 
+
     def val_iters(self, iter_index: int, data: Union[torch.Tensor, Tuple]):
         """Validation details.
 
@@ -271,6 +288,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
         for metric_name, metric_func in self.metrics.items():
             metric_item = self.metric_forward(metric_func, [prediction_rescaled, real_value_rescaled])
             self.update_epoch_meter("val_"+metric_name, metric_item.item())
+
 
     @torch.no_grad()
     @master_only
@@ -316,6 +334,7 @@ class BaseTimeSeriesForecastingRunner(BaseRunner):
             else:
                 metric_item = self.metric_forward(metric_func, [prediction.detach().cpu(), real_value.detach().cpu()])
             self.update_epoch_meter("test_"+metric_name, metric_item.item())
+
 
     @master_only
     def on_validating_end(self, train_epoch: Optional[int]):

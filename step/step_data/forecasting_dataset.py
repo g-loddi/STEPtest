@@ -21,16 +21,21 @@ class ForecastingDataset(Dataset):
         super().__init__()
         assert mode in ["train", "valid", "test"], "error mode"
         self._check_if_file_exists(data_file_path, index_file_path)
+        
         # read raw data (normalized)
         data = load_pkl(data_file_path)
         processed_data = data["processed_data"]
         self.data = torch.from_numpy(processed_data).float()
+        
         # read index
         self.index = load_pkl(index_file_path)[mode]
+        
         # length of long term historical data
         self.seq_len = seq_len
+        
         # mask
         self.mask = torch.zeros(self.seq_len, self.data.shape[1], self.data.shape[2])
+
 
     def _check_if_file_exists(self, data_file_path: str, index_file_path: str):
         """Check if data file and index file exist.
@@ -48,6 +53,7 @@ class ForecastingDataset(Dataset):
             raise FileNotFoundError("BasicTS can not find data file {0}".format(data_file_path))
         if not os.path.isfile(index_file_path):
             raise FileNotFoundError("BasicTS can not find index file {0}".format(index_file_path))
+
 
     def __getitem__(self, index: int) -> tuple:
         """Get a sample.
@@ -69,6 +75,7 @@ class ForecastingDataset(Dataset):
             long_history_data = self.data[idx[1] - self.seq_len:idx[1]]     # 11
 
         return future_data, history_data, long_history_data
+
 
     def __len__(self):
         """Dataset length
