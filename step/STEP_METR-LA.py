@@ -43,6 +43,7 @@ CFG.MODEL.ARCH = STEP
 CFG.MODEL.PARAM = {
     "dataset_name": CFG.DATASET_NAME,
     "pre_trained_tsformer_path": "tsformer_ckpt/TSFormer_METR-LA.pt",
+    # TSFormer structure init.
     "tsformer_args": {
                     "patch_size":12,
                     "in_channel":1,
@@ -56,6 +57,7 @@ CFG.MODEL.PARAM = {
                     "decoder_depth":1,
                     "mode":"forecasting"
     },
+    # Graph Wavenet init.
     "backend_args": {
                     "num_nodes" : 207,
                     "support_len" : 2,
@@ -73,6 +75,7 @@ CFG.MODEL.PARAM = {
                     "blocks"            : 4,
                     "layers"            : 2
     },
+    # Discrete graph learning init.
     "dgl_args": {
                 "dataset_name": CFG.DATASET_NAME,
                 "k": 10,
@@ -122,6 +125,9 @@ CFG.TRAIN.DATA.SHUFFLE = True
 CFG.TRAIN.DATA.NUM_WORKERS = 2
 CFG.TRAIN.DATA.PIN_MEMORY = True
 # curriculum learning
+# NOTE: The strategy gradually increases the prediction length of the model with the
+#       increase in iteration number. We increase the prediction length
+#       by one per cl_num epochs.
 CFG.TRAIN.CL = EasyDict()
 CFG.TRAIN.CL.WARM_EPOCHS = 0
 CFG.TRAIN.CL.CL_EPOCHS = 6
