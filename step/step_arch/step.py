@@ -16,7 +16,7 @@ class STEP(nn.Module):
         self.pre_trained_tsformer_path = pre_trained_tsformer_path
 
         # iniitalize the TSFormer and backend models
-        self.tsformer = TSFormer(**tsformer_args)
+        self.tsformer = TSFormer(**tsformer_args) # NOTE: TSFormer is initialized in "forecast" mode.
         self.backend = GraphWaveNet(**backend_args)
 
         # load pre-trained TSFormer into self.tsformer

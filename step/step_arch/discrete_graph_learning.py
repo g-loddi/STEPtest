@@ -62,7 +62,7 @@ class DiscreteGraphLearning(nn.Module):
         self.node_feats = torch.from_numpy(load_pkl("datasets/" + dataset_name + "/data_in{0}_out{1}.pkl".format(input_seq_len, output_seq_len))["processed_data"]).float()[:self.train_length, :, 0]
 
 
-        # CNN for global feature extraction
+        # Convolutional + other layers for global feature extraction (this is G^i in eq.2)
         ## for the dimension, see https://github.com/zezhishao/STEP/issues/1#issuecomment-1191640023
         # NOTE: this part is related to Section "3.2 - The Forecasting Stage", eq.2, of the paper.
         self.dim_fc = {"METR-LA": 383552, "PEMS04": 217296, "PEMS03": 244560, "PEMS07": 263920, "PEMS-BAY": 583424, "PEMS08": 228256}[dataset_name]
@@ -75,26 +75,41 @@ class DiscreteGraphLearning(nn.Module):
         self.bn2 = torch.nn.BatchNorm1d(16)
         self.bn3 = torch.nn.BatchNorm1d(self.embedding_dim)
 
-
-        # FC for transforming the features from TSFormer
+        # NOTE: dim_fc_mean and fc_mean are not used, see the authors' comment in the forward method.
         ## for the dimension, see https://github.com/zezhishao/STEP/issues/1#issuecomment-1191640023
         self.dim_fc_mean = {"METR-LA": 16128, "PEMS-BAY": 16128, "PEMS03": 16128 * 2, "PEMS04": 16128 * 2, "PEMS07": 16128, "PEMS08": 16128 * 2}[dataset_name]
         self.fc_mean = nn.Linear(self.dim_fc_mean, 100)
 
 
-        # discrete graph learning
-        self.fc_cat = nn.Linear(self.embedding_dim, 2)
+        # discrete graph learning part (related to eq.2 in the paper)
+        self.fc_cat = nn.Linear(self.embedding_dim, 2) # First FC layer, applied after concat.
         self.fc_out = nn.Linear((self.embedding_dim) * 2, self.embedding_dim)
         self.dropout = nn.Dropout(0.5)
 
 
         def encode_one_hot(labels):
         # reference code https://github.com/chaoshangcs/GTS/blob/8ed45ff1476639f78c382ff09ecca8e60523e7ce/model/pytorch/model.py#L149
-            classes = set(labels)
+            classes = set(labels) # This is equivalent to computing "unique" over a dataframe.
+            # From the identity array, select the vector representing the one-hot encoding for a given node.
             classes_dict = {c: np.identity(len(classes))[i, :] for i, c in enumerate(classes)}
+            # The line below retrieves the appropriate vector from the the dict "classes_dict" for each node index in "labels".
+            # This produces a 2D array of shape "[len(labels), len(classes_dict[0])]".
             labels_one_hot = np.array(list(map(classes_dict.get, labels)), dtype=np.int32)
             return labels_one_hot
 
+
+        # The code below generates one-hot representations of the receiver "and sender nodes.
+        # NOTE: when we provide only the "condition" argument to np.where, where "condition" is a boolean 2D array, then np.where 
+        #       returns a tuple containing two 1D arrays. The first 1D array, which is then used to build "self.rec_rec", contains the indices
+        #       of the non-zero elements within "condition" when "condition" is scanned column-wise (i.e., vertically). 
+        #       The second 1D array contains the indices of the non-zero elements within "condition" when this is scanned row-wise (i.e., horizontally).
+        #       Both 1D arrays have length equal to the number of elements in "condition", i.e., num_nodes^2.
+        #
+        #       From these two 1D arrays, we create two 2D tensor, one for receiver nodes and one for sender nodes. Consider the matrix
+        #       O = np.ones((self.num_nodes, self.num_nodes)): then, if o_{i,j} \in O = 1, we say that the node "i" is a sender (see rel_send) while
+        #       the node "j" is a receiver (see rel_rec).
+        #       As a result, both 2D tensors have shape "[num_nodes^2, num_nodes]", where "num_nodes" is due to the one-hot encoding used to represent
+        #       each node in the final matrices.
         self.rel_rec = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[0]), dtype=np.float32))
         self.rel_send = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[1]), dtype=np.float32))
 
@@ -173,32 +188,51 @@ class DiscreteGraphLearning(nn.Module):
         print(f"DEBUG FRA, discrete_graph_learning.forward() => global_feat shape / 6: {global_feat.shape}")
 
 
-        # generate dynamic feature based on TSFormer
+        # Compute the embeddings of the multivariate timeseries with TSFormer encoder.
+        # (IGNORE this comment) generate dynamic feature based on TSFormer
+        # NOTE: the line below preserves (via the ellipsis) all the dimensions except the last one, in which we only select the first feature.  
         hidden_states = tsformer(long_term_history[..., [0]])
-        # The dynamic feature has now been removed,
-        # as we found that it could lead to instability in the learning of the underlying graph structure.
+        # print(f"DEBUG FRA, discrete_graph_learning.forward() => long_term_history shape: {long_term_history.shape}")
+        # print(f"DEBUG FRA, discrete_graph_learning.forward() => hidden_states shape: {hidden_states.shape}")
+        
+        # NOTE (from the AUTHORS): the dynamic feature has now been removed, as we found that it could lead to instability in the learning
+        #                            of the underlying graph structure.
+        # NOTE 2: So, it seems that the authors have "disabled" the first term of the sum in the second equation of eq.2, i.e.,
+        #         we simply have Z^i = G^i.
         # dynamic_feat = F.relu(self.fc_mean(hidden_states.reshape(batch_size, num_nodes, -1)))     # relu(FC(Hi)) in Eq. (2)
 
-        # time series feature
+
+        # time series feature (it's just an alias for the "global_feat" tensor)
         node_feat = global_feat
 
-        # learning discrete graph structure
-        receivers = torch.matmul(self.rel_rec.to(node_feat.device), node_feat)
-        senders = torch.matmul(self.rel_send.to(node_feat.device), node_feat)
-        edge_feat = torch.cat([senders, receivers], dim=-1)
-        edge_feat = torch.relu(self.fc_out(edge_feat))
-        # Bernoulli parameter (unnormalized) Theta_{ij} in Eq. (2)
-        bernoulli_unnorm = self.fc_cat(edge_feat)
 
-        # sampling
-        ## differentiable sampling via Gumbel-Softmax in Eq. (4)
+        # learning discrete graph structure
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => self.rel_rec shape: {self.rel_rec.shape}")
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => self.rel_send shape: {self.rel_send.shape}")
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => node_feat shape: {node_feat.shape}")
+        # NOTE: the two matmuls below represent a broadcasted matrix x batched matrix multiplication.
+        #       The shape of node_feat is [batches, num_nodes, dim(global_feat) = 100].
+        #       The shape of self.rel_rec and self.rel_send is [num_nodes^2, num_nodes] (see also the "__init__" constructor).
+        receivers = torch.matmul(self.rel_rec.to(node_feat.device), node_feat) # This represents Z^i in eq.2 (TODO: is it?)
+        senders = torch.matmul(self.rel_send.to(node_feat.device), node_feat) # This represents Z^j in eq.2 (TODO: is it?)
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => receivers shape: {receivers.shape}")
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => senders shape: {senders.shape}")
+        
+        # Computing the Bernoulli parameter (unnormalized) Theta_{ij} in Eq. (2)
+        edge_feat = torch.cat([senders, receivers], dim=-1) # Concat + first FC applied over Z^i and Z^j
+        edge_feat = torch.relu(self.fc_out(edge_feat)) # RELU
+        bernoulli_unnorm = self.fc_cat(edge_feat) # Second final FC
+
+
+        ## Differentiable sampling via Gumbel-Softmax in Eq. (4)
         sampled_adj = gumbel_softmax(bernoulli_unnorm, temperature=0.5, hard=True)
         sampled_adj = sampled_adj[..., 0].clone().reshape(batch_size, num_nodes, -1)
         ## remove self-loop
         mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(sampled_adj.device)
         sampled_adj.masked_fill_(mask, 0)
 
-        # prior graph based on TSFormer
+
+        # prior graph based on TSFormer (i.e., the A^a).
         adj_knn = self.get_k_nn_neighbor(hidden_states.reshape(batch_size, num_nodes, -1), k=self.k*self.num_nodes, metric="cosine")
         mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(adj_knn.device)
         adj_knn.masked_fill_(mask, 0)
