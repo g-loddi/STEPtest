@@ -98,18 +98,21 @@ class DiscreteGraphLearning(nn.Module):
             return labels_one_hot
 
 
-        # The code below generates one-hot representations of the receiver "and sender nodes.
-        # NOTE: when we provide only the "condition" argument to np.where, where "condition" is a boolean 2D array, then np.where 
-        #       returns a tuple containing two 1D arrays. The first 1D array, which is then used to build "self.rec_rec", contains the indices
-        #       of the non-zero elements within "condition" when "condition" is scanned column-wise (i.e., vertically). 
-        #       The second 1D array contains the indices of the non-zero elements within "condition" when this is scanned row-wise (i.e., horizontally).
+        # The code below generates one-hot representations of the receiver and sender nodes.
+        # NOTE: when we provide only the "condition" argument to np.where, where "condition" is a boolean 2D array, then np.where scans "condition"
+        #       row-wise and returns a tuple containing two 1D arrays. The first 1D array, which is then used to build "self.rec_rec", contains the 
+        #       row-indices of the non-zero elements within "condition". These are actually the sender nodes (i.e., the ones from which edges originate),
+        #       but the authors appear to have swapped their meaning.
+        #  
+        #       The second 1D array contains the column-indices of the non-zero elements within "condition". These are actually the receiver nodes 
+        #       -- again, the authors appear to have swapped their meaning.
+        #       
         #       Both 1D arrays have length equal to the number of elements in "condition", i.e., num_nodes^2.
+        #       Probably, the fact that the authors swapped their meaning should not have repercussions -- see code in the forward method.
         #
-        #       From these two 1D arrays, we create two 2D tensor, one for receiver nodes and one for sender nodes. Consider the matrix
-        #       O = np.ones((self.num_nodes, self.num_nodes)): then, if o_{i,j} \in O = 1, we say that the node "i" is a sender (see rel_send) while
-        #       the node "j" is a receiver (see rel_rec).
-        #       As a result, both 2D tensors have shape "[num_nodes^2, num_nodes]", where "num_nodes" is due to the one-hot encoding used to represent
-        #       each node in the final matrices.
+        #       From these two 1D arrays, we create two 2D tensor, one for receiver nodes and one for sender nodes, containing the one-hot encodings
+        #       of the nodes rather than their indexes. As a result, both 2D tensors have shape "[num_nodes^2, num_nodes]", where "num_nodes" is due
+        #       to the one-hot encodings.
         self.rel_rec = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[0]), dtype=np.float32))
         self.rel_send = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[1]), dtype=np.float32))
 
@@ -206,27 +209,48 @@ class DiscreteGraphLearning(nn.Module):
         node_feat = global_feat
 
 
-        # learning discrete graph structure
+        ### Learning discrete graph structure ###
         print(f"DEBUG FRA, discrete_graph_learning.forward() => self.rel_rec shape: {self.rel_rec.shape}")
         print(f"DEBUG FRA, discrete_graph_learning.forward() => self.rel_send shape: {self.rel_send.shape}")
         print(f"DEBUG FRA, discrete_graph_learning.forward() => node_feat shape: {node_feat.shape}")
-        # NOTE: the two matmuls below represent a broadcasted matrix x batched matrix multiplication.
-        #       The shape of node_feat is [batches, num_nodes, dim(global_feat) = 100].
-        #       The shape of self.rel_rec and self.rel_send is [num_nodes^2, num_nodes] (see also the "__init__" constructor).
-        receivers = torch.matmul(self.rel_rec.to(node_feat.device), node_feat) # This represents Z^i in eq.2 (TODO: is it?)
-        senders = torch.matmul(self.rel_send.to(node_feat.device), node_feat) # This represents Z^j in eq.2 (TODO: is it?)
+
+        # The overall objective of the two matmuls below, which perform a "broadcasted matrix x batched matrix" multiplication
+        # is to create two matrices with shape "[num_nodes^2, dim(global_feat)]", namely "receivers" and "senders". Note that "num_nodes^2"
+        # is the number of edges in the graph if there exist an edge for every pair of nodes.
+        #
+        # Recall that "rel_rec" contains the one-hot encodings of the nodes that are on the receiving side of an edge, while "rel_send"
+        # contains the one-hot encodings of nodes that are on the originating side of an edge. Both have shape [num_nodes^2, num_nodes].
+        # 
+        # Furthermore, recall that "node_feat" = "global_feat" contains the global features of the windows of the timeseries in a batch,
+        # and it has shape [batches, num_nodes, dim(global_feat) = 100].
+        # 
+        # So, the act of performing a batch multiplication between, e.g., "self.rel_rec" and "node_feat" yields a 3D tensor of shape
+        # [batches, num_nodes^2, dim(global_feat) = 100], where each submatrix [num_nodes^2, dim(global_feat) = 100] contains the global features
+        # computed over the windows of the time series of receiver nodes. In other words, the one-hot encodings serve to select the global features
+        # associated to the various receiver nodes.
+        #
+        # Analogous line of reasoning applies to "senders"
+        receivers = torch.matmul(self.rel_rec.to(node_feat.device), node_feat) # This matrix contains the various Z^is = G^is used in eq.2
+        senders = torch.matmul(self.rel_send.to(node_feat.device), node_feat) # This matrix contains the various Z^js = G^js used in eq.2
         print(f"DEBUG FRA, discrete_graph_learning.forward() => receivers shape: {receivers.shape}")
         print(f"DEBUG FRA, discrete_graph_learning.forward() => senders shape: {senders.shape}")
         
-        # Computing the Bernoulli parameter (unnormalized) Theta_{ij} in Eq. (2)
-        edge_feat = torch.cat([senders, receivers], dim=-1) # Concat + first FC applied over Z^i and Z^j
-        edge_feat = torch.relu(self.fc_out(edge_feat)) # RELU
-        bernoulli_unnorm = self.fc_cat(edge_feat) # Second final FC
+        # Computing the Bernoulli parameter (unnormalized) Theta in Eq. (2)
+        edge_feat = torch.cat([senders, receivers], dim=-1) # We concatenate senders and receivers on the dimension of the global feature embeddings.
+                                                            # In other words, for each edge, we concat the global feature embeddings of the sender
+                                                            # and receiver, thus yielding an embedding double the size of the former two.
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => edge_feat shape: {edge_feat.shape}")
+        edge_feat = torch.relu(self.fc_out(edge_feat)) # FC (halves the second dim of edge_feat) + RELU
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => edge_feat shape / 2: {edge_feat.shape}")
+        bernoulli_unnorm = self.fc_cat(edge_feat) # Second final FC: this reduces the second dimension of edge_feat to 2: it yields 
+                                                  # the unnormalized /theta. Shape: "[batch, num_nodes^2, 2]". 
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => bernoulli_unnorm shape: {bernoulli_unnorm.shape}")
 
 
         ## Differentiable sampling via Gumbel-Softmax in Eq. (4)
         sampled_adj = gumbel_softmax(bernoulli_unnorm, temperature=0.5, hard=True)
         sampled_adj = sampled_adj[..., 0].clone().reshape(batch_size, num_nodes, -1)
+        
         ## remove self-loop
         mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(sampled_adj.device)
         sampled_adj.masked_fill_(mask, 0)
