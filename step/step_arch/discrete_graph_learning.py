@@ -9,24 +9,58 @@ from .similarity import batch_cosine_similarity, batch_dot_similarity
 
 
 def sample_gumbel(shape, eps=1e-20, device=None):
+    """
+    To sample the noise from a Gumbel distribution, the code below use the Inverse Transform Sampling method
+    (see also https://en.wikipedia.org/wiki/Inverse_transform_sampling).
+
+    First, we take samples from the uniform distribution in the range [0,1): these represent probabilities.
+    Then, we use the Gumbel inversed CDF and feed to it the aforementioned probabilities to get the values of a random variable
+    following the Gumbel distribution.
+    """
+
+    # Generate a tensor whose values are drawn from the uniform distribution in [0,1).
+    # These represent the probabilities used to draw samples from the Gumbel distribution.
     uniform = torch.rand(shape).to(device)
+
+    # Generate the actual Gumbel noise using its Inversed CDF and the probabilities generated from a uniform distribution. 
+    # NOTE 1: "eps" serves to avoid computing logaritms of zero or very small values, which might lead to -inf.
+    # NOTE 2: the use of 'torch.autograd.Variable' is useless and can be removed.
+    # NOTE 3: Recall that the Gumbel CDF is:
+    #
+    #         F(x) = exp(-exp(-\frac{x - \mu}{\beta})) = p,
+    #
+    #         where "p" is the probability that a random variable will take a value <= x. 
+    #         Recall that the inverse of a CDF, or F^{-1}(p), returns the smallest "x" such that F(x) = p.
+    #         In the case of Gumbel's CDF, this can be derived by working on:
+    #
+    #         p = exp(-exp(-\frac{x - \mu}{\beta})) \in [0,1)
+    #    
+    #         and with some algebraic manipulations using the natural logarithm we arrive at:
+    # 
+    #         x = \mu - \beta * ln(-ln(p))
+    # 
+    #         In the code it is assumed that \mu = 0 and \beta = 1, so the eq. simplifies to: x = -ln(-ln(p)),
+    #         and thus the inverse CDF is: F^{-1}(p) = -ln(-ln(p))
+    # 
+    #         Then, by feeding the "p" values from "uniform" in the inversed CDF give us the values of a random variable following the Gumbel distribution.
     return -torch.autograd.Variable(torch.log(-torch.log(uniform + eps) + eps))
 
 
 def gumbel_softmax_sample(logits, temperature, eps=1e-10):
-    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => logits shape: {logits.shape}")
     
     # Generates Gumbel noise of the same shape as the logits.
     sample = sample_gumbel(logits.size(), eps=eps, device=logits.device)
+    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => logits shape: {logits.shape}")
     print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => sample shape: {sample.shape}")
     
-    # The Gumbel noise is used to perturb the logits, ensuring that the sampling process is differentiable.
+    # Use the Gumbel noise to perturb the logits. This ensures that we are actually sampling from the prob. dist.
+    # (i.e., the Bernoulli one) represented by the logits, and that the sampling process is differentiable.
     y = logits + sample
-    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => y shape: {y.shape}")
     
-    # The perturbed logits are then passed through a softmax function, scaled by the temperature.
+    # The samples are then passed through a softmax function, scaled by the temperature.
     # This returns a tensor of shape "[batch_size, num_edges, 2]", where each pair of values represents
     # the probabilities of the edge being absent or present.
+    # NOTE: the smaller the temperature, the closer we get to the categorical distribution. The larger, the closer to the uniform distribution.
     return F.softmax(y / temperature, dim=-1)
 
 
@@ -35,7 +69,8 @@ def gumbel_softmax(logits, temperature, hard=False, eps=1e-10):
     The use of Gumbel noise in the context of the Gumbel-Softmax trick is a way 
     to create a differentiable approximation of discrete random variables, 
     which is the case with the Bernoulli distribution, and is essential for backpropagation
-    in neural networks. 
+    in neural networks. Moreover, introducing sampling allow the model to better explore the 
+    solution space when training.
 
     Args:
         logits: [batch_size, n_class] unnormalized log-probs
@@ -51,11 +86,23 @@ def gumbel_softmax(logits, temperature, hard=False, eps=1e-10):
     y_soft = gumbel_softmax_sample(logits, temperature=temperature, eps=eps)
     
     if hard:
+        
         shape = logits.size()
+        
+        # Finds the index of the maximum value along the last dimension, effectively performing an argmax.
         _, k = y_soft.data.max(-1)
+        
+        # Creates a tensor of zeros with the same shape as logits, then uses scatter_ to create a one-hot 
+        # encoded tensor based on the indices from the argmax operation.
         y_hard = torch.zeros(*shape).to(logits.device)
         y_hard = y_hard.zero_().scatter_(-1, k.view(shape[:-1] + (1,)), 1.0)
-        y = torch.autograd.Variable(y_hard - y_soft.data) + y_soft
+
+        # Straight-Through Estimator: Uses the straight-through estimator to create a tensor that is one-hot during
+        # the forward pass but has gradients from the soft sample during backpropagation. Overall, this ensures that the sampling
+        # process is differentiable, while allowing to make hard decisions given a probability distribution.
+        # NOTE: Here, y_hard is the hard one-hot sample, and y_soft is the continuous soft sample. The .detach() operation prevents gradients
+        # from flowing through y_hard, while the addition of "y_soft" ensures that the gradient during backpropagation is taken from the soft sample.
+        y = torch.autograd.Variable(y_hard - y_soft.data) + y_soft # equivalent to the more modern "(y_hard - y_soft.data).detach() + y_soft"
     else:
         y = y_soft
     
