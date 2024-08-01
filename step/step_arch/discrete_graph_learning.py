@@ -14,13 +14,28 @@ def sample_gumbel(shape, eps=1e-20, device=None):
 
 
 def gumbel_softmax_sample(logits, temperature, eps=1e-10):
+    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => logits shape: {logits.shape}")
+    
+    # Generates Gumbel noise of the same shape as the logits.
     sample = sample_gumbel(logits.size(), eps=eps, device=logits.device)
+    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => sample shape: {sample.shape}")
+    
+    # The Gumbel noise is used to perturb the logits, ensuring that the sampling process is differentiable.
     y = logits + sample
+    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => y shape: {y.shape}")
+    
+    # The perturbed logits are then passed through a softmax function, scaled by the temperature.
+    # This returns a tensor of shape "[batch_size, num_edges, 2]", where each pair of values represents
+    # the probabilities of the edge being absent or present.
     return F.softmax(y / temperature, dim=-1)
 
 
 def gumbel_softmax(logits, temperature, hard=False, eps=1e-10):
     """Sample from the Gumbel-Softmax distribution and optionally discretize.
+    The use of Gumbel noise in the context of the Gumbel-Softmax trick is a way 
+    to create a differentiable approximation of discrete random variables, 
+    which is the case with the Bernoulli distribution, and is essential for backpropagation
+    in neural networks. 
 
     Args:
         logits: [batch_size, n_class] unnormalized log-probs
@@ -34,6 +49,7 @@ def gumbel_softmax(logits, temperature, hard=False, eps=1e-10):
     """
 
     y_soft = gumbel_softmax_sample(logits, temperature=temperature, eps=eps)
+    
     if hard:
         shape = logits.size()
         _, k = y_soft.data.max(-1)
@@ -42,6 +58,7 @@ def gumbel_softmax(logits, temperature, hard=False, eps=1e-10):
         y = torch.autograd.Variable(y_hard - y_soft.data) + y_soft
     else:
         y = y_soft
+    
     return y
 
 
@@ -245,10 +262,17 @@ class DiscreteGraphLearning(nn.Module):
         bernoulli_unnorm = self.fc_cat(edge_feat) # Second final FC: this reduces the second dimension of edge_feat to 2: it yields 
                                                   # the unnormalized /theta. Shape: "[batch, num_nodes^2, 2]". 
         print(f"DEBUG FRA, discrete_graph_learning.forward() => bernoulli_unnorm shape: {bernoulli_unnorm.shape}")
+        
+        
+        # NOTE: given an element in the batch, we have a submatrix with shape "[num_edges, 2]". This means that for each edge we have two logits,
+        #       representing, respectively, the probability that an edge is present (first logit) or absent (second logit).  
 
 
         ## Differentiable sampling via Gumbel-Softmax in Eq. (4)
+        # This turns the logits in bernoulli_unnorm into 0 and 1 values (edge either exists or not),
+        # and makes the sampling process differentiable.
         sampled_adj = gumbel_softmax(bernoulli_unnorm, temperature=0.5, hard=True)
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => sampled_adj shape: {sampled_adj.shape}")
         sampled_adj = sampled_adj[..., 0].clone().reshape(batch_size, num_nodes, -1)
         
         ## remove self-loop
