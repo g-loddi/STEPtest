@@ -342,14 +342,21 @@ class DiscreteGraphLearning(nn.Module):
         print(f"DEBUG FRA, discrete_graph_learning.forward() => sampled_adj shape: {sampled_adj.shape}")
 
 
-        # NOTE: sampled_adj[..., 0] given a batch element and an edge, the slicing preserves only the first element in the one-hot encoding,
-        #        i.e., we are interested to know just if an edge is present. This yields a tensor with shape [num_batches, num_edges].
-        #        The final reshape ..... 
+        # NOTE: given a batch element and an edge, the slicing "sampled_adj[..., 0]" preserves only the first element in the one-hot encoding,
+        #        i.e., we are interested to know just if an edge is present. This yields a tensor with shape [num_batches, num_edges], i.e., each
+        #        batch element contains a graph adjacency matrix.
+        #        The final reshape then serves the purpose of making the flattened adjacency submatrix 2D, thus yielding a final tensor with shape
+        #        [batch_size, num_nodes, num_nodes]. 
         # NOTE 2: the clone operation seems unnecesary, as the original sampled_adj is being overwritten.
         sampled_adj = sampled_adj[..., 0].clone().reshape(batch_size, num_nodes, -1)
         print(f"DEBUG FRA, discrete_graph_learning.forward() => sampled_adj shape / 2: {sampled_adj.shape}")
         
-        ## remove self-loop
+
+        # Removal of the self-loops within the adjacency matrices.
+        # NOTE: first, eye creates an identity matrix, and the unsqueeze serves the purpose of creating a broadcastable identity matrix across
+        #       the batch elements.
+        #       The broadcastable identity matrix has thus shape [1, num_nodes, num_nodes] and is used to remove (via the masked_fill_) the 
+        #       self-loops from the adjacency matrices (notice the zero value).
         mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(sampled_adj.device)
         sampled_adj.masked_fill_(mask, 0)
 
