@@ -50,17 +50,23 @@ def gumbel_softmax_sample(logits, temperature, eps=1e-10):
     
     # Generates Gumbel noise of the same shape as the logits.
     sample = sample_gumbel(logits.size(), eps=eps, device=logits.device)
-    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => logits shape: {logits.shape}")
-    print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => sample shape: {sample.shape}")
+    # print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => logits shape: {logits.shape}")
+    # print(f"DEBUG FRA, discrete_graph_learning.py.gumbel_softmax_sample() => sample shape: {sample.shape}")
     
     # Use the Gumbel noise to perturb the logits. This ensures that we are actually sampling from the prob. dist.
     # (i.e., the Bernoulli one) represented by the logits, and that the sampling process is differentiable.
+    # NOTE: This works since the final normalized probabilities computed by the softmax are determined by the distances between the logits
+    # rather than their absolute values. For example, the logits [2.0, 1.9] and [2000.0, 1999.0] yield the same normalized
+    # probabilities, while [2.0, 1.9] and [2000.0, 1900.0] don't. This explains why implementing sampling by perturbing the logits with noise works.
+    # Moreover, the Gumbel noise is the best one to preserve the original categorical distribution represented by the logits.
     y = logits + sample
     
     # The samples are then passed through a softmax function, scaled by the temperature.
     # This returns a tensor of shape "[batch_size, num_edges, 2]", where each pair of values represents
     # the probabilities of the edge being absent or present.
     # NOTE: the smaller the temperature, the closer we get to the categorical distribution. The larger, the closer to the uniform distribution.
+    #       Best temperature values are typically around 0.5 (as is the case in the paper), but other approaches might perform annealing to find
+    #       even better values for some considered scenario. 
     return F.softmax(y / temperature, dim=-1)
 
 
@@ -84,24 +90,37 @@ def gumbel_softmax(logits, temperature, hard=False, eps=1e-10):
     """
 
     y_soft = gumbel_softmax_sample(logits, temperature=temperature, eps=eps)
-    
     if hard:
-        
         shape = logits.size()
         
-        # Finds the index of the maximum value along the last dimension, effectively performing an argmax.
+        # This version of the max function finds the maximum values and their indexes along the last dimension.
+        # Since we are interested in the indexes, we are using max as an argmax.
         _, k = y_soft.data.max(-1)
         
+
         # Creates a tensor of zeros with the same shape as logits, then uses scatter_ to create a one-hot 
         # encoded tensor based on the indices from the argmax operation.
         y_hard = torch.zeros(*shape).to(logits.device)
+
+
+        # NOTE: Tensor.scatter_(dim, index, src, *, reduce=None): writes all values from the 
+        # tensor src=k into self at the indices specified in the index "k" tensor. For each 
+        # value in k, its output index is specified by its index in k for dimension != dim 
+        # and by the corresponding value in index for dimension = dim.
+        # NOTE 2: k has shape [batch_size, num_edges], while its view has shape [batch_size, num_edges, 1].
+        # NOTE 3: the reshape of "k" could be written in more simple terms as "k.unsqueeze(-1)".
         y_hard = y_hard.zero_().scatter_(-1, k.view(shape[:-1] + (1,)), 1.0)
+
 
         # Straight-Through Estimator: Uses the straight-through estimator to create a tensor that is one-hot during
         # the forward pass but has gradients from the soft sample during backpropagation. Overall, this ensures that the sampling
-        # process is differentiable, while allowing to make hard decisions given a probability distribution.
+        # process is differentiable when doing backprop, while allowing to make hard decisions given a probability distribution when
+        # doing the forward pass.
         # NOTE: Here, y_hard is the hard one-hot sample, and y_soft is the continuous soft sample. The .detach() operation prevents gradients
-        # from flowing through y_hard, while the addition of "y_soft" ensures that the gradient during backpropagation is taken from the soft sample.
+        # from flowing through y_hard, while the addition of "y_soft" at the end ensures that the gradient during backpropagation is taken from
+        # the soft sample.
+        # NOTE 2: instead of "torch.autograd.Variable(y_hard - y_soft.data)", which effectively creates a new tensor detached from the computation
+        #         graph, we can simply write "(y_hard - y_soft.data).detach()"
         y = torch.autograd.Variable(y_hard - y_soft.data) + y_soft # equivalent to the more modern "(y_hard - y_soft.data).detach() + y_soft"
     else:
         y = y_soft
@@ -315,12 +334,20 @@ class DiscreteGraphLearning(nn.Module):
         #       representing, respectively, the probability that an edge is present (first logit) or absent (second logit).  
 
 
-        ## Differentiable sampling via Gumbel-Softmax in Eq. (4)
-        # This turns the logits in bernoulli_unnorm into 0 and 1 values (edge either exists or not),
-        # and makes the sampling process differentiable.
+        ## Differentiable sampling via Gumbel-Softmax in Eq. (4): this trick makes the sampling process differentiable.
+        # NOTE: this generate samples from the logits in bernoulli_unnorm in the form of one-hot encodings (vectors with 2 els):
+        #       if the first position is 1 then an edge exists, if the second position is one then the edge does not exist.
+        #       This yields a tensor with shape [batch_size, num_edges, 2].
         sampled_adj = gumbel_softmax(bernoulli_unnorm, temperature=0.5, hard=True)
         print(f"DEBUG FRA, discrete_graph_learning.forward() => sampled_adj shape: {sampled_adj.shape}")
+
+
+        # NOTE: sampled_adj[..., 0] given a batch element and an edge, the slicing preserves only the first element in the one-hot encoding,
+        #        i.e., we are interested to know just if an edge is present. This yields a tensor with shape [num_batches, num_edges].
+        #        The final reshape ..... 
+        # NOTE 2: the clone operation seems unnecesary, as the original sampled_adj is being overwritten.
         sampled_adj = sampled_adj[..., 0].clone().reshape(batch_size, num_nodes, -1)
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => sampled_adj shape / 2: {sampled_adj.shape}")
         
         ## remove self-loop
         mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(sampled_adj.device)
