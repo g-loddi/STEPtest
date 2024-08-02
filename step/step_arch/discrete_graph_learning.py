@@ -183,18 +183,18 @@ class DiscreteGraphLearning(nn.Module):
 
         # The code below generates one-hot representations of the receiver and sender nodes.
         # NOTE: when we provide only the "condition" argument to np.where, where "condition" is a boolean 2D array, then np.where scans "condition"
-        #       row-wise and returns a tuple containing two 1D arrays. The first 1D array, which is then used to build "self.rec_rec", contains the 
+        #       row-wise and returns a tuple containing two 1D arrays. The first 1D array, which is then used to build "self.rel_rec", contains the 
         #       row-indices of the non-zero elements within "condition". These are actually the sender nodes (i.e., the ones from which edges originate),
-        #       but the authors appear to have swapped their meaning.
+        #       but the authors appear to have swapped the name with self.rel_send.
         #  
         #       The second 1D array contains the column-indices of the non-zero elements within "condition". These are actually the receiver nodes 
-        #       -- again, the authors appear to have swapped their meaning.
+        #       -- again, the authors appear to have swapped the name with the former variable.
         #       
-        #       Both 1D arrays have length equal to the number of elements in "condition", i.e., num_nodes^2.
+        #       Both 1D arrays have length equal to the number of elements in "condition", i.e., num_nodes^2 = num_edges.
         #       Probably, the fact that the authors swapped their meaning should not have repercussions -- see code in the forward method.
         #
         #       From these two 1D arrays, we create two 2D tensor, one for receiver nodes and one for sender nodes, containing the one-hot encodings
-        #       of the nodes rather than their indexes. As a result, both 2D tensors have shape "[num_nodes^2, num_nodes]", where "num_nodes" is due
+        #       of the nodes rather than their indexes. As a result, both 2D tensors have shape "[num_edges, num_nodes]", where the last dimension is due
         #       to the one-hot encodings.
         self.rel_rec = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[0]), dtype=np.float32))
         self.rel_send = torch.FloatTensor(np.array(encode_one_hot(np.where(np.ones((self.num_nodes, self.num_nodes)))[1]), dtype=np.float32))
@@ -202,24 +202,47 @@ class DiscreteGraphLearning(nn.Module):
 
     def get_k_nn_neighbor(self, data, k=11*207, metric="cosine"):
         """
-        data: tensor B, N, D
+        data: tensor B, N, D (i.e., batch_size, num_nodes, dim_conc_embs)
         metric: cosine or dot
         """
 
+        # Compute some metric similarity over the various TSFormer hidden_states contained in "data"
         if metric == "cosine":
             batch_sim = batch_cosine_similarity(data, data)
         elif metric == "dot":
             batch_sim = batch_dot_similarity(data, data)    # B, N, N
         else:
             assert False, "unknown metric"
+        print(f"DEBUG FRA, discrete_graph_learning.get_k_nn_neighbor() => batch_sim shape: {batch_sim.shape}")
+
+
+        # Now, given an element of a batch in batch_sim, we have a similarity matrix with shape [num_nodes, num_nodes].
+        # The idea here is to find the k most similar pairs of nodes in the whole similarity matrix, rather than the k-NNs for each node.
+        # Indeed, notice that the "k" passed to this function has value "k * num_nodes" rather than a small value.
+        # This is important because it explains why adj is flattened below.
         batch_size, num_nodes, _ = batch_sim.shape
+        
+        # Flatten the batched similarity matrices.
         adj = batch_sim.view(batch_size, num_nodes*num_nodes)
         res = torch.zeros_like(adj)
+
+        # Within each similarity matrix in a batch, find the k most similar pairs of nodes (k highest sim score).  
         top_k, indices = torch.topk(adj, k, dim=-1)
+        print(f"DEBUG FRA, discrete_graph_learning.get_k_nn_neighbor() => top_k and indices shape: {top_k.shape}")
+        
+        # Res is essentially the similarity matrix where the values of the elements whose index is not in indices remains to 0.
         res.scatter_(-1, indices, top_k)
+
+        # Here we are essentially doing "adj = binarized res", i.e., the elements in the final adjacency matrix are True
+        # where we have found the k most similar pairs of nodes.   
         adj = torch.where(res != 0, 1.0, 0.0).detach().clone()
+
+        # Reshape adj back to shape [batch_size, num_nodes, num_nodes].
         adj = adj.view(batch_size, num_nodes, num_nodes)
+        
+        # Useless, adj comes from a tensor that has been detached.
         adj.requires_grad = False
+        
         return adj
 
 
@@ -282,9 +305,8 @@ class DiscreteGraphLearning(nn.Module):
         # print(f"DEBUG FRA, discrete_graph_learning.forward() => hidden_states shape: {hidden_states.shape}")
         
         # NOTE (from the AUTHORS): the dynamic feature has now been removed, as we found that it could lead to instability in the learning
-        #                            of the underlying graph structure.
-        # NOTE 2: So, it seems that the authors have "disabled" the first term of the sum in the second equation of eq.2, i.e.,
-        #         we simply have Z^i = G^i.
+        #                           of the underlying graph structure. So, it seems that the authors have "disabled" the first term of the
+        #                           sum in the second equation of eq.2, i.e., we simply have Z^i = G^i.
         # dynamic_feat = F.relu(self.fc_mean(hidden_states.reshape(batch_size, num_nodes, -1)))     # relu(FC(Hi)) in Eq. (2)
 
 
@@ -298,17 +320,17 @@ class DiscreteGraphLearning(nn.Module):
         print(f"DEBUG FRA, discrete_graph_learning.forward() => node_feat shape: {node_feat.shape}")
 
         # The overall objective of the two matmuls below, which perform a "broadcasted matrix x batched matrix" multiplication
-        # is to create two matrices with shape "[num_nodes^2, dim(global_feat)]", namely "receivers" and "senders". Note that "num_nodes^2"
-        # is the number of edges in the graph if there exist an edge for every pair of nodes.
+        # is to create two matrices with shape "[num_nodes^2 = num_edges, dim(global_feat)]", namely "receivers" and "senders".
         #
-        # Recall that "rel_rec" contains the one-hot encodings of the nodes that are on the receiving side of an edge, while "rel_send"
-        # contains the one-hot encodings of nodes that are on the originating side of an edge. Both have shape [num_nodes^2, num_nodes].
+        # Recall that "rel_rec" contains the one-hot encodings of the nodes that are on the receiving side of an edge (i.e., the indexes
+        # of the columns in the graph adjacency matrix), while "rel_send" contains the one-hot encodings of nodes that are on the 
+        # originating side of an edge (indexes of rows in the adjacency matrix). Both have shape [num_edges, num_nodes].
         # 
         # Furthermore, recall that "node_feat" = "global_feat" contains the global features of the windows of the timeseries in a batch,
         # and it has shape [batches, num_nodes, dim(global_feat) = 100].
         # 
         # So, the act of performing a batch multiplication between, e.g., "self.rel_rec" and "node_feat" yields a 3D tensor of shape
-        # [batches, num_nodes^2, dim(global_feat) = 100], where each submatrix [num_nodes^2, dim(global_feat) = 100] contains the global features
+        # [batches, num_edges, dim(global_feat) = 100], where each submatrix [num_edges, dim(global_feat) = 100] contains the global features
         # computed over the windows of the time series of receiver nodes. In other words, the one-hot encodings serve to select the global features
         # associated to the various receiver nodes.
         #
@@ -352,7 +374,7 @@ class DiscreteGraphLearning(nn.Module):
         print(f"DEBUG FRA, discrete_graph_learning.forward() => sampled_adj shape / 2: {sampled_adj.shape}")
         
 
-        # Removal of the self-loops within the adjacency matrices.
+        # Removal of the self-loops within the sampled adjacency matrices.
         # NOTE: first, eye creates an identity matrix, and the unsqueeze serves the purpose of creating a broadcastable identity matrix across
         #       the batch elements.
         #       The broadcastable identity matrix has thus shape [1, num_nodes, num_nodes] and is used to remove (via the masked_fill_) the 
@@ -364,8 +386,17 @@ class DiscreteGraphLearning(nn.Module):
         # Compute the prior graph A^a based on computing the k-NNs of the hidden states (the embedding of the patches) generated by TSFormer.
         # NOTE: this will be used in the loss of the STEP model toghether with sampled_adj, see also eq.3 in the paper. 
         #       Its implementation is in "step_loss.py".
-        adj_knn = self.get_k_nn_neighbor(hidden_states.reshape(batch_size, num_nodes, -1), k=self.k*self.num_nodes, metric="cosine")
+        # NOTE 2: torch.eye and masked_fill_ are again used to eliminate the self loops in the adjacency matrix computed from the k-NNs.
+        # NOTE 3: recall that hidden_state enters in "get_k_nn_neighbor" with shape [batch_size, num_nodes, num_patches * dim_emb_patches = 168 * 96].
+        #         In other words, we are going to compute the similarity between pairs of concatenated embeddings of patches, which is used as a proxy
+        #         to compute the similarity between pairs of windows of timeseries.
+        # NOTE 4: "k" is set to 10 in the training config of STEP, see "STEP_METR-LA.py".
+        print(f"DEBUG FRA, discrete_graph_learning.forward() => hidden_states shape: {hidden_states.shape}")
+        adj_knn = self.get_k_nn_neighbor(hidden_states.reshape(batch_size, num_nodes, -1),
+                                         k=self.k*self.num_nodes, # Here we are basically reserving the space for k NNs for each node.
+                                         metric="cosine")
         mask = torch.eye(num_nodes, num_nodes).unsqueeze(0).bool().to(adj_knn.device)
         adj_knn.masked_fill_(mask, 0)
+
 
         return bernoulli_unnorm, hidden_states, adj_knn, sampled_adj

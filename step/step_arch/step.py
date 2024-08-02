@@ -65,10 +65,11 @@ class STEP(nn.Module):
         # Dimensions considered by STEP (?)
         batch_size, _, num_nodes, _ = short_term_history.shape
 
-        # discrete graph learning: here we pass the long-term history, and the callback to TSFormer feed forward.
+        ### discrete graph learning: here we pass the long-term history, and the callback to the TSFormer model. ###
         bernoulli_unnorm, hidden_states, adj_knn, sampled_adj = self.discrete_graph_learning(long_term_history, self.tsformer)
 
-        # enhancing downstream STGNNs
+        ### enhancing downstream STGNNs ###
+        # NOTE: this is where Graph Wavenet (i.e., backend) is used to make predictions. 
         hidden_states = hidden_states[:, :, -1, :]
         y_hat = self.backend(short_term_history, hidden_states=hidden_states, sampled_adj=sampled_adj).transpose(1, 2)
 
